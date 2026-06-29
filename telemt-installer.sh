@@ -713,31 +713,41 @@ restart_service() {
 }
 
 format_stats() {
-  python3 - <<'PY'
-import json, sys, math, time
+  USERS_JSON="${1:-{}}" SUMMARY_JSON="${2:-{}}" python3 - <<'PY'
+import json, os, math
 
-users_raw, summary_raw = sys.stdin.read().split("\n---SUMMARY---\n", 1)
-
-def load(s):
+def load_env(name):
     try:
-        return json.loads(s)
+        return json.loads(os.environ.get(name, "{}") or "{}")
     except Exception:
         return {}
 
-users_payload = load(users_raw)
-summary_payload = load(summary_raw)
+users_payload = load_env("USERS_JSON")
+summary_payload = load_env("SUMMARY_JSON")
 
 users = users_payload.get("data") or []
-summary = ((summary_payload.get("data") or {}).get("data") or {})
+summary_root = summary_payload.get("data") or {}
+summary = summary_root.get("data") or summary_root
 totals = summary.get("totals") or {}
+
+def to_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 total_conns = totals.get("current_connections")
 active_users = totals.get("active_users")
 
 if total_conns is None:
-    total_conns = sum(int(u.get("current_connections") or 0) for u in users)
+    total_conns = sum(to_int(u.get("current_connections")) for u in users)
+else:
+    total_conns = to_int(total_conns)
+
 if active_users is None:
-    active_users = sum(1 for u in users if int(u.get("current_connections") or 0) > 0)
+    active_users = sum(1 for u in users if to_int(u.get("current_connections")) > 0)
+else:
+    active_users = to_int(active_users)
 
 all_ips = []
 for u in users:
@@ -745,7 +755,7 @@ for u in users:
         if ip not in all_ips:
             all_ips.append(ip)
 
-estimated_devices = max(active_users, math.ceil(int(total_conns or 0) / 3)) if int(total_conns or 0) else 0
+estimated_devices = max(active_users, math.ceil(total_conns / 3)) if total_conns else 0
 
 print(f"Active TCP connections : {total_conns}")
 print(f"Active users/secrets   : {active_users}")
@@ -760,11 +770,11 @@ if not users:
 else:
     for u in users:
         username = u.get("username", "?")
-        conns = int(u.get("current_connections") or 0)
+        conns = to_int(u.get("current_connections"))
         ips = u.get("active_unique_ips") or 0
         ip_list = ", ".join(u.get("active_unique_ips_list") or [])
         recent_ips = u.get("recent_unique_ips")
-        total_octets = int(u.get("total_octets") or 0)
+        total_octets = to_int(u.get("total_octets"))
         mb = total_octets / 1024 / 1024
         ad = u.get("user_ad_tag") or "disabled"
 
@@ -795,11 +805,7 @@ print_monitor_once() {
   users_json="$(api_get "/v1/users" || echo '{}')"
   summary_json="$(api_get "/v1/runtime/connections/summary" || echo '{}')"
 
-  {
-    printf '%s\n' "$users_json"
-    printf '%s\n' "---SUMMARY---"
-    printf '%s\n' "$summary_json"
-  } | format_stats
+  format_stats "$users_json" "$summary_json"
 }
 
 monitor() {
